@@ -1,9 +1,10 @@
-#libraries
+# libraries
+import ctypes
+import platform
 
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from scipy.optimize import fsolve, least_squares
 from scipy.interpolate import interp1d
 from scipy.optimize import root_scalar
 from scipy.interpolate import RegularGridInterpolator
@@ -11,38 +12,53 @@ from scipy.stats import linregress
 
 from PySpice.Spice.Netlist import Circuit
 from PySpice.Spice.NgSpice.Shared import NgSpiceShared
-import gc
-
-# this code requires the ngspice library to be installed
-import ctypes
-NgSpiceShared.library_path = r'C:\Spice64_dll\dll-vs\ngspice.dll'
-ctypes.cdll.LoadLibrary("C:/Spice64_dll/dll-vs/ngspice.dll")
 
 # Constants
 k = 1.380649e-23  # Boltzmann constant in J/K
 q = 1.60217662e-19  # Electron charge in C
-h 	= 	6.62606957e-34 	# Js Planck's constant
-c	= 	2.99792458e8	# m/s speed of light
+h = 6.62606957e-34  # Js Planck's constant
+c = 2.99792458e8  # m/s speed of light
 
-epsrox = 3.9
-eps0 = 8.85e-14  # F/cm
-epsrs = 11.9
+epsrox = 3.9  # relative permittivity of oxide
+eps0 = 8.85e-14  # relative permittivity F/cm
+epsrs = 11.9  # relative permittivity of Si
 T = 300  # K
 Vt = (k * T) / q  # eV
 hc = 1240  # eV*nm
 
-
-
 # functions
 
+
 def Si_bulk_lifetime(Ndop, Delta_n, waferT, ni, Temp):
+    """
+    Calculate
+        - intrinsic Auger and Radiative lifetimes in Si using Niewelt model.
+        - effective intrinsic carrier concentration
+        - equilibrium carrier concentrations
+        - ?
+    Inputs:
+        Ndop: Doping concentration (cm^-3)
+        Delta_n: Excess carrier concentration (cm^-3)
+        waferT: Wafer temperature (K)
+        ni: Intrinsic carrier concentration (cm^-3)
+        Temp: Temperature (K)
+    Outputs:
+        t_Aug: Auger lifetime (s)
+        t_Rad: Radiative lifetime (s)
+        np.sqrt(nieff): Effective intrinsic carrier concentration (cm^-3)
+        p0eff: Effective equilibrium hole concentration (cm^-3)
+        n0eff: Effective equilibrium electron concentration (cm^-3)
+        n_deff: ?
+        p_deff: ?
+    """
+
     # Niewelt model for intrinsic lifetime calculation
     # https://doi.org/10.1016/j.solmat.2021.111467
-    
-    if Ndop > 0:
+
+    if Ndop > 0:  # p-type
         p_0 = Ndop
         n_0 = ni**2 / p_0
-    else:
+    else:  # n-type
         n_0 = -Ndop
         p_0 = ni**2 / n_0
 
@@ -54,10 +70,12 @@ def Si_bulk_lifetime(Ndop, Delta_n, waferT, ni, Temp):
         p_d = p_0 + Delta_n
 
     Blow = 4.76e-15  # [cm^3s^-1] Radiative recombination coefficient
-    Bmin = 0.2 + (0 - 0.2) / (1 + (Temp / 320)**2.5)
-    b1 = 2 * (1.5e18 + (1e7 - 1.5e18) / (1 + (Temp / 550)**3.0))
-    b3 = 2 * (4e18 + (1e9 - 4e18) / (1 + (Temp / 365)**3.54))
-    Brel = Bmin + (1.00 - Bmin) / (1 + ((n_d + p_d) / b1)**0.54 + ((n_d + p_d) / b3)**1.25)
+    Bmin = 0.2 + (0 - 0.2) / (1 + (Temp / 320) ** 2.5)
+    b1 = 2 * (1.5e18 + (1e7 - 1.5e18) / (1 + (Temp / 550) ** 3.0))
+    b3 = 2 * (4e18 + (1e9 - 4e18) / (1 + (Temp / 365) ** 3.54))
+    Brel = Bmin + (1.00 - Bmin) / (
+        1 + ((n_d + p_d) / b1) ** 0.54 + ((n_d + p_d) / b3) ** 1.25
+    )
 
     nieff = ni**2 / Brel
     if n_0 > p_0:
@@ -75,36 +93,53 @@ def Si_bulk_lifetime(Ndop, Delta_n, waferT, ni, Temp):
     # Photon recycling
     fPR = 0.9835 + 0.006841 * np.log10(waferT) - 4.554e-9 * Delta_n**0.4612
 
-    geeh = 1 + (4.38 - 1) / (1 + ((n_d + p_d) / 4e17)**2)
-    gehh = 1 + (4.88 - 1) / (1 + ((n_d + p_d) / 4e17)**2)
+    geeh = 1 + (4.38 - 1) / (1 + ((n_d + p_d) / 4e17) ** 2)
+    gehh = 1 + (4.88 - 1) / (1 + ((n_d + p_d) / 4e17) ** 2)
 
-    R_Auger = (3.41e-31 * geeh * ((n_d**2 * p_d) - (n0eff**2 * p0eff)) +
-               1.17e-31 * gehh * ((n_d * p_d**2) - (n0eff * p0eff**2)))
+    R_Auger = 3.41e-31 * geeh * (
+        (n_d**2 * p_d) - (n0eff**2 * p0eff)
+    ) + 1.17e-31 * gehh * ((n_d * p_d**2) - (n0eff * p0eff**2))
 
     t_Aug = Delta_n / R_Auger
 
-    R_rad = ((n_d * p_d - nieff) * (B * (1 - fPR)))
+    R_rad = (n_d * p_d - nieff) * (B * (1 - fPR))
 
     t_Rad = Delta_n / R_rad
 
-    return t_Aug, t_Rad, np.sqrt(nieff), p0eff, n0eff, n_deff, p_deff 
+    return t_Aug, t_Rad, np.sqrt(nieff), p0eff, n0eff, n_deff, p_deff
+
 
 def calculate_efficiency(voltages, currents, plotting=False):
-# Calculate power at each voltage point
+    """
+    Calculate efficiency, Jsc, Voc, and FF from I-V data.
+    Inputs:
+        voltages: np.ndarray of voltages (V)
+        currents: np.ndarray of current densities (A/cm^2)
+        plotting: bool, whether to plot the I-V and power curves
+    Outputs:
+        efficiency: float, efficiency (%)
+        Jsc: float, short-circuit current density (A/cm^2)
+        Voc: float, open-circuit voltage (V)
+        FF: float, fill factor
+    """
+
+    # Calculate power at each voltage point
     powers = voltages * currents
 
     # Find max power point (MPP)
     max_power_idx = np.argmax(powers)
     v_mpp = voltages[max_power_idx]
-    i_mpp = currents[max_power_idx]
+    # i_mpp = currents[max_power_idx]
     p_mpp = powers[max_power_idx]
 
-    efficiency = (p_mpp) * 1e3
-    
+    efficiency = (
+        p_mpp
+    ) * 1e3  # Convert to percentage assuming 100 mW/cm2 input (1000 W/m2 or 1 sun)
+
     # Find Jsc (iJ at iV closest to 0 V)
     Jsc_index = np.argmin(np.abs(voltages))
     Jsc = currents[Jsc_index]
-    
+
     # Find where current crosses zero
     if np.any(currents < 0):
         f_voc = interp1d(currents, voltages)
@@ -112,55 +147,83 @@ def calculate_efficiency(voltages, currents, plotting=False):
     else:
         Voc = np.nan  # No crossing found
 
-    FF = efficiency*1e-3/(Voc*Jsc)
-
-
-    if plotting == True:
+    FF = (
+        efficiency * 1e-3 / (Voc * Jsc)
+    )  # Convert efficiency back to fraction for FF calculation by multiplying by incident power density of 1000 W/m2
+    if plotting is True:
         fig, ax1 = plt.subplots(figsize=(6, 4))
-        color = 'tab:blue'
-        ax1.set_xlabel('Voltage (V)')
-        ax1.set_ylabel('Current Density (mA/cm2)', color=color)
-        ax1.plot(voltages, currents*1e3, color=color, label='Current')
-        ax1.tick_params(axis='y', labelcolor=color)
-        ax1.set_ylim(0, np.max(currents*1e3) * 1.1)
+        color = "tab:blue"
+        ax1.set_xlabel("Voltage (V)")
+        ax1.set_ylabel("Current Density (mA/cm2)", color=color)
+        ax1.plot(voltages, currents * 1e3, color=color, label="Current")
+        ax1.tick_params(axis="y", labelcolor=color)
+        ax1.set_ylim(0, np.max(currents * 1e3) * 1.1)
 
         ax2 = ax1.twinx()
-        color = 'tab:red'
-        ax2.set_ylabel('Power (mW/cm2)', color=color)
-        ax2.plot(voltages, powers*1e3, color=color, label='Power')
-        ax2.tick_params(axis='y', labelcolor=color)
-        ax2.set_ylim(0, np.max(powers*1e3) * 1.1)
+        color = "tab:red"
+        ax2.set_ylabel("Power (mW/cm2)", color=color)
+        ax2.plot(voltages, powers * 1e3, color=color, label="Power")
+        ax2.tick_params(axis="y", labelcolor=color)
+        ax2.set_ylim(0, np.max(powers * 1e3) * 1.1)
 
         # Mark the max power point
-        ax2.plot(v_mpp, p_mpp, 'ko')
-        ax2.annotate(f'{efficiency:.2f}%', xy=(v_mpp, 1e3*p_mpp),
-                    xytext=(v_mpp*0.9, 1e3*p_mpp*1.01),
-                    
-                    fontsize=10, color='black')
+        ax2.plot(v_mpp, p_mpp, "ko")
+        ax2.annotate(
+            f"{efficiency:.2f}%",
+            xy=(v_mpp, 1e3 * p_mpp),
+            xytext=(v_mpp * 0.9, 1e3 * p_mpp * 1.01),
+            fontsize=10,
+            color="black",
+        )
 
-        plt.title('Solar Cell I-V and Power Curve')
+        plt.title("Solar Cell I-V and Power Curve")
         fig.tight_layout()
         plt.show()
 
     return efficiency, Jsc, Voc, FF
 
-def pseudo_efficiency_Si( l, Waf_thick, J0d, R_tco, dop_type, Ndop, ni, Jsc_Si):
+
+def pseudo_efficiency_Si(l, Waf_thick, J0d, R_tco, dop_type, Ndop, ni, Jsc_Si):
+    """
+    Calculate pseudo J-V curve and efficiency for Si cell.
+    Inputs:
+        l: Finger pitch (cm)
+        Waf_thick: Wafer thickness (cm)
+        J0d: Dark saturation current density (A/cm^2)
+        R_tco: TCO sheet resistance (ohm/sq)
+        dop_type: Doping type (+1 for p-type, -1 for n-type)
+        Ndop: Doping concentration (cm^-3)
+        ni: Intrinsic carrier concentration (cm^-3)
+        Jsc_Si: Short-circuit current density (A/cm^2)
+    Outputs:
+        iV: np.ndarray of implied voltages (V)
+        iJ: np.ndarray of implied current densities (mA/cm^2)
+        iJsc: implied Short-circuit current density (mA/cm^2)
+        iVoc: implied Open-circuit voltage (V)
+        iFF: implied Fill factor (%)
+    """
 
     # Sample range for excess carrier concentration (Delta n)
-    delta_n = np.logspace(12, 16.4, 1000)  # in cm^-3
+    delta_n = np.logspace(10, 16.4, 1000)  # in cm^-3
     # J0d = 2e-15 # Dark saturation current density, A/cm2
 
     # Calculate intrinsic lifetimes
-    t_Aug, t_Rad, n_i_eff, _, _, _, _ = Si_bulk_lifetime(dop_type * Ndop, delta_n, Waf_thick, ni, T)
+    t_Aug, t_Rad, n_i_eff, _, _, _, _ = Si_bulk_lifetime(
+        dop_type * Ndop, delta_n, Waf_thick, ni, T
+    )
 
     # Calculate effective lifetime including J0 term
-    tau_eff = 1 / (1 / t_Aug + 1 / t_Rad + (J0d * (Ndop + delta_n) / (Waf_thick * q * n_i_eff**2)))  # Combined intrinsic lifetime
+    tau_eff = 1 / (
+        1 / t_Aug + 1 / t_Rad + (J0d * (Ndop + delta_n) / (Waf_thick * q * n_i_eff**2))
+    )  # Combined intrinsic lifetime
 
     # Calculate iJ using intrinsic lifetime
-    iJ =  ( Jsc_Si - (q * Waf_thick * delta_n / tau_eff) ) * 1e3  # Convert to mA/cm^2
+    iJ = (Jsc_Si - (q * Waf_thick * delta_n / tau_eff)) * 1e3  # Convert to mA/cm^2
 
     # Calculate iV
-    iV = (k * T / q) * np.log((delta_n * (Ndop + delta_n)) / (n_i_eff**2)) - (iJ * 1e-3 * R_tco * l**2 / 6)
+    iV = (k * T / q) * np.log((delta_n * (Ndop + delta_n)) / (n_i_eff**2)) - (
+        iJ * 1e-3 * R_tco * l**2 / 6
+    )
 
     # Calculate implied efficiency
     pseudo_efficiency = iV * iJ  # Simplified efficiency calculation
@@ -176,121 +239,208 @@ def pseudo_efficiency_Si( l, Waf_thick, J0d, R_tco, dop_type, Ndop, ni, Jsc_Si):
     else:
         iVoc = np.nan
 
-    iFF=100* np.max(pseudo_efficiency) / (iVoc * iJsc)
-    
-    print(f"Pseudo J-V curve results:")
-    print(f"Implied Efficiency: {np.max(iV * iJ):.4f}, Jsc = {iJsc:.4f} mA/cm^2,Voc = {1e3*iVoc:.4f} mV,FF = {iFF:.4f} %")
-    
+    iFF = 100 * np.max(pseudo_efficiency) / (iVoc * iJsc)
+
+    print("Pseudo J-V curve results:")
+    print(
+        f"Implied Efficiency: {np.max(iV * iJ):.4f}, Jsc = {iJsc:.4f} mA/cm^2,Voc = {1e3*iVoc:.4f} mV,FF = {iFF:.4f} %"
+    )
+
     return iV, iJ, iJsc, iVoc, iFF
 
 
 def Jsc_pvk_func(lambda_vec, AM15g, pvk_thick, Eg, df_pvk0):
-    # Calculate the short-circuit current density for the perovskite cell
-    
-    lambda_shift=get_lambda_shift(Eg,lambda_vec,df_pvk0)
-    
-    file_path = "./data/pvk_nk_data.csv"
-    df_pvk = pd.read_csv(file_path)
-    
-    # pvk_thick= 600e-7  # cm
-    interp1d_pvk_alpha = interp1d(df_pvk['lambda_k'], df_pvk['alpha'], kind='linear', fill_value='extrapolate')
-    
-    Abs_pvk=1-np.exp(-interp1d_pvk_alpha(lambda_vec) * pvk_thick)
-    
-    Jsc_pvk = q * np.trapezoid(AM15g * (Abs_pvk), lambda_vec)  # cm^-1 * cm = unitless
-    
-    AM15g_after_pvk = AM15g * np.exp(-interp1d_pvk_alpha(lambda_vec) * pvk_thick)
+    """
+    Calculate
+        - the
+        - the short-circuit current density for the perovskite cell.
+        - the filtered AM1.5g spectrum after the perovskite layer.
+        - the absorption spectrum of the perovskite layer.
+    Inputs:
+        lambda_vec: Wavelength vector (nm)
+        AM15g: AM1.5g solar spectrum (W/m^2/nm)
+        pvk_thick: Perovskite layer thickness (cm)
+        Eg: Perovskite bandgap (eV)
+        df_pvk0: DataFrame with perovskite optical properties at reference bandgap
+    Outputs:
+        Jsc_pvk: Short-circuit current density for perovskite cell (A/cm^2)
+        AM15g_after_pvk: Filtered AM1.5g spectrum after perovskite layer (W/m^2/nm)
+        Abs_pvk: Absorption spectrum of perovskite layer
+    """
 
+    # Calculate the short-circuit current density for the perovskite cell
+
+    file_path = r"C:\Users\linc5977\Desktop\hub\TandEx\data\pvk_nk_data.csv"
+    df_pvk = pd.read_csv(file_path)
+
+    # pvk_thick= 600e-7  # cm
+    interp1d_pvk_alpha = interp1d(
+        df_pvk["lambda_k"], df_pvk["alpha"], kind="linear", fill_value="extrapolate"  # type: ignore
+    )
+
+    Abs_pvk = 1 - np.exp(-interp1d_pvk_alpha(lambda_vec) * pvk_thick)
+
+    Jsc_pvk = q * np.trapezoid(AM15g * (Abs_pvk), lambda_vec)  # cm^-1 * cm = unitless
+
+    AM15g_after_pvk = AM15g * np.exp(-interp1d_pvk_alpha(lambda_vec) * pvk_thick)
 
     return Jsc_pvk, AM15g_after_pvk, Abs_pvk
 
-def Jsc_Si_fun(Waf_thick, lambda_vec, AM15g):
-    
+
+def Jsc_Si_func(Waf_thick, lambda_vec, AM15g):
+    """
+    Calculate
+        - the short-circuit current density for the Si cell.
+        - the absorption spectrum of the Si layer.
+    Inputs:
+        Waf_thick: Si wafer thickness (cm)
+        lambda_vec: Wavelength vector (nm)
+        AM15g: Filtered AM1.5g solar spectrum after top cell (W/m^2/nm)
+    Outputs:
+        Jsc_Si: Short-circuit current density for Si cell (A/cm^2)
+        Ax: Absorption spectrum of Si layer
+    """
+
     # Load the Si n_k properties
-    file_path = "./data/Si_opt.csv"
+    file_path = r"C:\Users\linc5977\Desktop\hub\TandEx\data\Si_opt.csv"
     Si_nk = pd.read_csv(file_path)
-    Si_nk = Si_nk.rename(columns={
-        'λ,n (nm)': 'lambda_n',
-        'n': 'n',
-        'λ,k (nm)': 'lambda_k',
-        'k': 'k',
-        'α (cm⁻¹)': 'alpha'
-    })
-    
+    Si_nk = Si_nk.rename(
+        columns={
+            "λ,n (nm)": "lambda_n",
+            "n": "n",
+            "λ,k (nm)": "lambda_k",
+            "k": "k",
+            "α (cm⁻¹)": "alpha",
+        }
+    )
 
-    a=0.935; b=0.67
-    
+    a = 0.935
+    b = 0.67  # from Green's model
 
-    a_W_lambda = interp1d(Si_nk['lambda_k'], Waf_thick*Si_nk['alpha'], kind='linear', fill_value='extrapolate')
-    n_lambda = interp1d(Si_nk['lambda_n'], Si_nk['n'], kind='linear', fill_value='extrapolate')
+    a_W_lambda = interp1d(
+        Si_nk["lambda_k"],
+        Waf_thick * Si_nk["alpha"],
+        kind="linear",
+        fill_value="extrapolate",  # type: ignore
+    )
+    n_lambda = interp1d(
+        Si_nk["lambda_n"], Si_nk["n"], kind="linear", fill_value="extrapolate"  # type: ignore
+    )
 
-    var=a_W_lambda(lambda_vec)
-    Zfact=(2+a*(var)**b)/(1+a*(var)**b)
+    var = a_W_lambda(lambda_vec)
+    Zfact = (2 + a * (var) ** b) / (1 + a * (var) ** b)
 
-    exp_term = np.exp(-2* Zfact * a_W_lambda(lambda_vec) )
-    Ax= (1 - exp_term) / (1 - (1 - 1 / n_lambda(lambda_vec)**2) * exp_term)
+    exp_term = np.exp(-2 * Zfact * a_W_lambda(lambda_vec))
+    Ax = (1 - exp_term) / (1 - (1 - 1 / n_lambda(lambda_vec) ** 2) * exp_term)
 
-    Jsc_Si = q * np.trapezoid(AM15g*Ax , lambda_vec) # in Amps/cm2.
+    Jsc_Si = q * np.trapezoid(AM15g * Ax, lambda_vec)  # in Amps/cm2.
     # print("Isc_Si =", 1e3*Isc_Si2/(w * (l / 2)), "mA/cm^2")
 
     return Jsc_Si, Ax
 
 
+def jv_diode_model(Vcell, I01_Si, I0Aug_Si, n_def, I0n_Si, Isc_Si, Rsh_Si, Rser, w, l):
+    """
+    Simulate the J-V curve of the Si cell using a diode model.
+    Inputs:
+        Vcell: Array of voltages to simulate (V)
+        I01_Si: Diode saturation current (A)
+        I0Aug_Si: Auger recombination current (A)
+        n_def: Diode ideality factor for defect recombination
+        I0n_Si: Second diode saturation current (A)
+        Isc_Si: Short-circuit current (A)
+        Rsh_Si: Shunt resistance (ohms)
+        Rser: Series resistance (ohms.cm^2)
+        w: Cell width (cm)
+        l: Finger pitch (cm)
+    Outputs:
+        currents: np.ndarray of current densities (A/cm^2)
+        eff: Efficiency (%)
+        Jsc: Short-circuit current density (A/cm^2)
+        Voc: Open-circuit voltage (V)
+    """
 
-def jv_diode_model(Vcell, I01_Si, I0Aug_Si, n_def, I0n_Si, Isc_Si, Rsh_Si, Rser, w,l):
-    
- 
-    top_cell= [0, 0, 0,  0, 0, 0]
-    bottom_cell = [Isc_Si, Rsh_Si, I01_Si, I0Aug_Si* w * (l / 2) , I0n_Si* w * (l / 2), n_def]
+    top_cell = [0, 0, 0, 0, 0, 0]
+    bottom_cell = [
+        Isc_Si,
+        Rsh_Si,
+        I01_Si,
+        I0Aug_Si * w * (l / 2),
+        I0n_Si * w * (l / 2),
+        n_def,
+    ]
 
-    circuit=make_circuit(top_cell, bottom_cell, Rser)
+    circuit = make_circuit(top_cell, bottom_cell, Rser)
 
     # Set up simulator
     simulator = circuit.simulator()
     currents = []
 
     for v in Vcell:
-        circuit['VLOAD'].dc_value = v  # 
+        circuit["VLOAD"].dc_value = v  #
         analysis = simulator.operating_point()
-        i_out = float(analysis.branches['vload'][0])
+        i_out = float(analysis.branches["vload"][0])  # type: ignore
         currents.append(i_out)
-        
+
     voltages = np.array(Vcell)
     currents = np.array(currents) / (w * (l / 2))
 
-    eff, Jsc, Voc =calculate_efficiency(voltages, currents, False)
+    eff, Jsc, Voc, _ = calculate_efficiency(voltages, currents, False)  # type: ignore
 
-    print(f"Efficiency= {eff:.4f}, Jsc = {1e3*Jsc:.5f} mA/cm^2, Voc = {Voc:.5f} V, FF = {0.1*eff/(Voc*Jsc):.5f} % ")
-    
+    print(
+        f"Efficiency= {eff:.4f}, Jsc = {1e3*Jsc:.5f} mA/cm^2, Voc = {Voc:.5f} V, FF = {0.1*eff/(Voc*Jsc):.5f} % "
+    )
+
     return currents, eff, Jsc, Voc
 
 
 def find_optimal_pitch(J0_Si, J0d, J0Aug_Si, Rsh_Si, Jsc_Si, l_values, R_tco, AAF):
     """
-    Finds the optimal finger pitch l for maximum efficiency.
-
-    Returns:
-        l_opt (float): Optimal pitch (cm)
-        app_Voc (float): Open-circuit voltage (V)
-        app_eff (np.ndarray): Efficiency array (%)
-        app_FF (np.ndarray): Fill factor array
-        app_Jsc (np.ndarray): Short-circuit current array (A/cm^2)
+    Find the optimal finger pitch for the Si cell to maximize efficiency.
+    Inputs:
+        J0_Si: radiative recombination (A/cm^2)
+        J0d: non-radiative (A/cm^2)
+        J0Aug_Si: Auger recombination current density (A/cm^2)
+        Rsh_Si: Shunt resistance (ohms.cm^2)
+        Jsc_Si: Short-circuit current density (A/cm^2)
+        l_values: Array of finger pitch values to evaluate (cm)
+        R_tco: TCO sheet resistance (ohm/sq)
+        AAF: active area fraction
+    Outputs:
+        l_opt: Optimal finger pitch (cm)
+        app_Voc: Approximated open-circuit voltage (V)
+        app_eff: Approximated efficiency (%)
+        app_FF: Approximated fill factor (%)
+        app_Jsc: Approximated short-circuit current density (A/cm^2)
     """
 
     def Voc_function(V):
+        """
+        Calculate the Voc function for root finding.
+        Inputs:
+            V: Voltage (V)
+        Outputs:
+            Difference between calculated and actual Jsc (A/cm^2)
+        """
         term1 = (J0_Si + J0d) * np.exp(q * V / (k * T))
-        term2 = J0Aug_Si * np.exp(q * V / ((2/3) * k * T))
+        term2 = J0Aug_Si * np.exp(q * V / ((2 / 3) * k * T))
         term3 = V / (Rsh_Si)
         return term1 + term2 + term3 - Jsc_Si
 
-    sol = root_scalar(Voc_function, bracket=[0, 0.8], method='brentq')
+    sol = root_scalar(
+        Voc_function, bracket=[0, 0.8], method="brentq"
+    )  # Voc should be < 0.8 V
     app_Voc = sol.root
 
     app_Jsc = Jsc_Si * AAF
-    app_neff = 2 * 1 * (2/3) / (1 + 2/3)
-    app_Voceff = app_Voc * q / (k * T) / 0.8  # Convert to eV
-    app_FF = ((app_Voceff - np.log(app_Voceff + 0.72)) / (app_Voceff + 1)) * \
-             (1 - (((l_values ** 2 / 12)) * R_tco) * Jsc_Si * AAF / app_Voc - app_Voc / (Rsh_Si * Jsc_Si * AAF))
+    # app_neff = 2 * 1 * (2 / 3) / (1 + 2 / 3)
+    app_Voceff = app_Voc * q / (k * T) / 0.8
+
+    app_FF = ((app_Voceff - np.log(app_Voceff + 0.72)) / (app_Voceff + 1)) * (
+        1
+        - (((l_values**2 / 12)) * R_tco) * Jsc_Si * AAF / app_Voc
+        - app_Voc / (Rsh_Si * Jsc_Si * AAF)
+    )
     app_eff = app_FF * app_Voc * app_Jsc / 0.1 * 100
 
     l_opt = l_values[np.argmax(app_eff)]
@@ -298,55 +448,63 @@ def find_optimal_pitch(J0_Si, J0d, J0Aug_Si, Rsh_Si, Jsc_Si, l_values, R_tco, AA
 
 
 def make_circuit(top_cell, bottom_cell, Rser):
-    circuit = Circuit('Solar Cell Model')
+    """
+    Create a PySpice circuit for the tandem solar cell.
+    Inputs:
+        top_cell: List of top cell parameters.
+        bottom_cell: List of bottom cell parameters.
+        Rser: Series resistance (ohms.cm^2).
+    Outputs:
+        circuit: PySpice Circuit object containing the solar cell model.
+    """
+    circuit = Circuit("Solar Cell Model")
 
     Isc_pvk, Rsh_pvk, I0_pvk, I0def_pvk, Rdef_pvk, I02_pvk = top_cell
 
     Isc_Si, Rsh_Si, I01_Si, I0Aug_Si, I0d_Si, n_def = bottom_cell
 
-    node1='n1'
-    node2='n2'
-    node22='n22'
-    node3='n3'
-    gnd=circuit.gnd
+    node1 = "n1"
+    node2 = "n2"
+    node22 = "n22"
+    node3 = "n3"
+    gnd = circuit.gnd
 
-    circuit.V('LOAD', node1, gnd, -0.01) # Load voltage source to measure output
-    circuit.R('Ser', node1, node2, Rser)
-    
-    circuit.I('pvk', node2, node3, Isc_pvk)
-    circuit.R('sh_pvk', node2, node3, Rsh_pvk)
+    circuit.V("LOAD", node1, gnd, -0.01)  # Load voltage source to measure output
+    circuit.R("Ser", node1, node2, Rser)
 
-    circuit.model('Dpvk', 'D', IS=I0_pvk , N=1)
-    circuit.D(10, node2, node3, model='Dpvk')
-    
-    if I0def_pvk>0:
-        circuit.model('DpvkAug', 'D', IS=I0def_pvk , N=1)
-        circuit.D(12, node2, node22, model='DpvkAug')
-        circuit.R('def_pvk', node22, node3, Rdef_pvk)
-    
-    
-    if I02_pvk>0:
-        circuit.model('DpvkRec', 'D', IS=I02_pvk , N=2)
-        circuit.D(13, node2, node3, model='DpvkRec')
+    circuit.I("pvk", node2, node3, Isc_pvk)
+    circuit.R("sh_pvk", node2, node3, Rsh_pvk)
 
+    circuit.model("Dpvk", "D", IS=I0_pvk, N=1)
+    circuit.D(10, node2, node3, model="Dpvk")
 
-    circuit.I('Si', node3, gnd, Isc_Si)
-    circuit.R('sh_Si', node3, gnd, Rsh_Si)
+    if I0def_pvk > 0:
+        circuit.model("DpvkAug", "D", IS=I0def_pvk, N=1)
+        circuit.D(12, node2, node22, model="DpvkAug")
+        circuit.R("def_pvk", node22, node3, Rdef_pvk)
 
-    circuit.model('Dsi', 'D', IS=I01_Si , N=1)
-    circuit.D(21, node3, gnd, model='Dsi')
-    circuit.model('DsiAug', 'D', IS=I0Aug_Si , N=2/3)
-    circuit.D(22, node3, gnd, model='DsiAug')
-    circuit.model('DsiRec', 'D', IS=I0d_Si , N=n_def)
-    circuit.D(23, node3, gnd, model='DsiRec')
+    if I02_pvk > 0:
+        circuit.model("DpvkRec", "D", IS=I02_pvk, N=2)
+        circuit.D(13, node2, node3, model="DpvkRec")
+
+    circuit.I("Si", node3, gnd, Isc_Si)
+    circuit.R("sh_Si", node3, gnd, Rsh_Si)
+
+    circuit.model("Dsi", "D", IS=I01_Si, N=1)
+    circuit.D(21, node3, gnd, model="Dsi")
+    circuit.model("DsiAug", "D", IS=I0Aug_Si, N=2 / 3)
+    circuit.D(22, node3, gnd, model="DsiAug")
+    circuit.model("DsiRec", "D", IS=I0d_Si, N=n_def)
+    circuit.D(23, node3, gnd, model="DsiRec")
 
     return circuit
+
 
 def simulate_circuit(top_cell, bottom_cell, Rser, w, l, Vcell):
     """
     Simulate the tandem cell circuit and return voltages and current densities.
 
-    Args:
+    Inputs:
         top_cell: List of top cell parameters.
         bottom_cell: List of bottom cell parameters.
         Rser: Series resistance (ohms.cm^2).
@@ -355,100 +513,109 @@ def simulate_circuit(top_cell, bottom_cell, Rser, w, l, Vcell):
         Vcell: Array of voltages to simulate.
         t_func: Module containing make_circuit.
 
-    Returns:
+    Outputs:
         voltages: np.ndarray of voltages.
         currents: np.ndarray of current densities (A/cm^2).
     """
-    Rseries= Rser / (w * (l / 2))
-    
-    circuit = Circuit('Solar Cell Model')
+    Rseries = Rser / (w * (l / 2))
+
+    circuit = Circuit("Solar Cell Model")
 
     Isc_pvk, Rsh_pvk, I0_pvk, I0def_pvk, Rdef_pvk, I02_pvk = top_cell
 
     Isc_Si, Rsh_Si, I01_Si, I0Aug_Si, I0d_Si, n_def = bottom_cell
 
-    node1='n1'
-    node2='n2'
-    node22='n22'
-    node3='n3'
-    gnd=circuit.gnd
+    node1 = "n1"
+    node2 = "n2"
+    node22 = "n22"
+    node3 = "n3"
+    gnd = circuit.gnd
 
-    circuit.V('LOAD', node1, gnd, -0.01) # Load voltage source to measure output
-    circuit.R('Ser', node1, node2, Rseries)
-    
-    circuit.I('pvk', node2, node3, Isc_pvk)
-    circuit.R('sh_pvk', node2, node3, Rsh_pvk)
+    circuit.V("LOAD", node1, gnd, -0.01)  # Load voltage source to measure output
+    circuit.R("Ser", node1, node2, Rseries)
 
-    circuit.model('Dpvk', 'D', IS=I0_pvk , N=1)
-    circuit.D(10, node2, node3, model='Dpvk')
-    
-    if I0def_pvk>0:
-        circuit.model('DpvkAug', 'D', IS=I0def_pvk , N=1)
-        circuit.D(12, node2, node22, model='DpvkAug')
-        circuit.R('def_pvk', node22, node3, Rdef_pvk)
-    
-    
-    if I02_pvk>0:
-        circuit.model('DpvkRec', 'D', IS=I02_pvk , N=2)
-        circuit.D(13, node2, node3, model='DpvkRec')
+    circuit.I("pvk", node2, node3, Isc_pvk)
+    circuit.R("sh_pvk", node2, node3, Rsh_pvk)
 
+    circuit.model("Dpvk", "D", IS=I0_pvk, N=1)
+    circuit.D(10, node2, node3, model="Dpvk")
 
-    circuit.I('Si', node3, gnd, Isc_Si)
-    circuit.R('sh_Si', node3, gnd, Rsh_Si)
+    if I0def_pvk > 0:
+        circuit.model("DpvkAug", "D", IS=I0def_pvk, N=1)
+        circuit.D(12, node2, node22, model="DpvkAug")
+        circuit.R("def_pvk", node22, node3, Rdef_pvk)
 
-    circuit.model('Dsi', 'D', IS=I01_Si , N=1)
-    circuit.D(21, node3, gnd, model='Dsi')
-    circuit.model('DsiAug', 'D', IS=I0Aug_Si , N=2/3)
-    circuit.D(22, node3, gnd, model='DsiAug')
-    circuit.model('DsiRec', 'D', IS=I0d_Si , N=n_def)
-    circuit.D(23, node3, gnd, model='DsiRec')
- 
+    if I02_pvk > 0:
+        circuit.model("DpvkRec", "D", IS=I02_pvk, N=2)
+        circuit.D(13, node2, node3, model="DpvkRec")
+
+    circuit.I("Si", node3, gnd, Isc_Si)
+    circuit.R("sh_Si", node3, gnd, Rsh_Si)
+
+    circuit.model("Dsi", "D", IS=I01_Si, N=1)
+    circuit.D(21, node3, gnd, model="Dsi")
+    circuit.model("DsiAug", "D", IS=I0Aug_Si, N=2 / 3)
+    circuit.D(22, node3, gnd, model="DsiAug")
+    circuit.model("DsiRec", "D", IS=I0d_Si, N=n_def)
+    circuit.D(23, node3, gnd, model="DsiRec")
+
     simulator = circuit.simulator()
     currents = []
 
     for v in Vcell:
-        circuit['VLOAD'].dc_value = v
+        circuit["VLOAD"].dc_value = v
         analysis = simulator.operating_point()
-        i_out = float(analysis.branches['vload'][0])
+        i_out = float(analysis.branches["vload"][0])  # type: ignore
         currents.append(i_out)
 
     voltages = np.array(Vcell)
     currents = np.array(currents) / (w * (l / 2))
     return voltages, currents
 
+
 def simulate_pvk_sj(top_cell, Rser, w, l, Vcell):
-    Rseries= Rser / (w * (l / 2))
-    
-    circuit = Circuit('Solar Cell Model')
+    """
+    Simulate the perovskite cell circuit and return voltages and current densities.
+    Inputs:
+        top_cell: List of top cell parameters.
+        Rser: Series resistance (ohms.cm^2).
+        w: Cell width (cm).
+        l: Finger pitch (cm).
+        Vcell: Array of voltages to simulate.
+    Outputs:
+        voltages: np.ndarray of voltages.
+        currents: np.ndarray of current densities (A/cm^2).
+    """
+    Rseries = Rser / (w * (l / 2))
+
+    circuit = Circuit("Solar Cell Model")
 
     Isc_pvk, Rsh_pvk, I0_pvk, I0def_pvk, Rdef_pvk, I02_pvk = top_cell
 
-    
-    circuit.V('LOAD', 'n1', circuit.gnd, -0.01) # Load voltage source to measure output
-    circuit.R('Ser', 'n1', 'n2', Rseries)
-    circuit.I('pvk', 'n2', circuit.gnd, Isc_pvk)
-    circuit.R('sh_pvk', 'n2', circuit.gnd, Rsh_pvk)
+    circuit.V("LOAD", "n1", circuit.gnd, -0.01)  # Load voltage source to measure output
+    circuit.R("Ser", "n1", "n2", Rseries)
+    circuit.I("pvk", "n2", circuit.gnd, Isc_pvk)
+    circuit.R("sh_pvk", "n2", circuit.gnd, Rsh_pvk)
 
-    circuit.model('Dpvk', 'D', IS=I0_pvk , N=1)
-    circuit.D(10, 'n2', circuit.gnd, model='Dpvk')
-    
-    if I0def_pvk>0:
-        circuit.model('DpvkAug', 'D', IS=I0def_pvk , N=1)
-        circuit.D(12, 'n2', 'n22', model='DpvkAug')
-        circuit.R('def_pvk', 'n22', circuit.gnd, Rdef_pvk)
-    
-    if I02_pvk>0:
-        circuit.model('DpvkRec', 'D', IS=I02_pvk , N=2)
-        circuit.D(13, 'n2', circuit.gnd, model='DpvkRec')
+    circuit.model("Dpvk", "D", IS=I0_pvk, N=1)
+    circuit.D(10, "n2", circuit.gnd, model="Dpvk")
 
- 
+    if I0def_pvk > 0:
+        circuit.model("DpvkAug", "D", IS=I0def_pvk, N=1)
+        circuit.D(12, "n2", "n22", model="DpvkAug")
+        circuit.R("def_pvk", "n22", circuit.gnd, Rdef_pvk)
+
+    if I02_pvk > 0:
+        circuit.model("DpvkRec", "D", IS=I02_pvk, N=2)
+        circuit.D(13, "n2", circuit.gnd, model="DpvkRec")
+
     simulator = circuit.simulator()
     currents = []
 
     for v in Vcell:
-        circuit['VLOAD'].dc_value = v
+        circuit["VLOAD"].dc_value = v
         analysis = simulator.operating_point()
-        i_out = float(analysis.branches['vload'][0])
+        i_out = float(analysis.branches["vload"][0])  # type: ignore
         currents.append(i_out)
 
     voltages = np.array(Vcell)
@@ -457,66 +624,111 @@ def simulate_pvk_sj(top_cell, Rser, w, l, Vcell):
 
 
 def simulate_Si_sj(bottom_cell, Rser, w, l, Vcell):
-    Rseries= Rser / (w * (l / 2))
-    
-    circuit = Circuit('Solar Cell Model')
+    """
+    Simulate the Si cell circuit and return voltages and current densities.
+    Inputs:
+        bottom_cell: List of bottom cell parameters.
+        Rser: Series resistance (ohms.cm^2).
+        w: Cell width (cm).
+        l: Finger pitch (cm).
+        Vcell: Array of voltages to simulate.
+    Outputs:
+        voltages: np.ndarray of voltages.
+        currents: np.ndarray of current densities (A/cm^2).
+    """
+    Rseries = Rser / (w * (l / 2))
+
+    print(Rser)
+
+    circuit = Circuit("Solar Cell Model")
 
     Isc_Si, Rsh_Si, I01_Si, I0Aug_Si, I0d_Si, n_def = bottom_cell
 
-    node1='n1'
-    node2='n2'
-    node22='n22'
-    node3='n2'
-    gnd=circuit.gnd
+    node1 = "n1"
+    node2 = "n2"
+    # node22 = "n22"
+    node3 = "n2"
+    gnd = circuit.gnd
 
-    circuit.V('LOAD', node1, gnd, -0.01) # Load voltage source to measure output
-    circuit.R('Ser', node1, node2, Rseries)
-    
-    circuit.I('Si', node3, gnd, Isc_Si)
-    circuit.R('sh_Si', node3, gnd, Rsh_Si)
+    circuit.V("LOAD", node1, gnd, -0.01)  # Load voltage source to measure output
+    circuit.R("Ser", node1, node2, Rseries)
 
-    circuit.model('Dsi', 'D', IS=I01_Si , N=1)
-    circuit.D(21, node3, gnd, model='Dsi')
-    circuit.model('DsiAug', 'D', IS=I0Aug_Si , N=2/3)
-    circuit.D(22, node3, gnd, model='DsiAug')
-    circuit.model('DsiRec', 'D', IS=I0d_Si , N=n_def)
-    circuit.D(23, node3, gnd, model='DsiRec')
+    circuit.I("Si", node3, gnd, Isc_Si)
+    circuit.R("sh_Si", node3, gnd, Rsh_Si)
 
-  
+    circuit.model("Dsi", "D", IS=I01_Si, N=1)
+    circuit.D(21, node3, gnd, model="Dsi")
+    circuit.model("DsiAug", "D", IS=I0Aug_Si, N=2 / 3)
+    circuit.D(22, node3, gnd, model="DsiAug")
+    circuit.model("DsiRec", "D", IS=I0d_Si, N=n_def)
+    circuit.D(23, node3, gnd, model="DsiRec")
+
     simulator = circuit.simulator()
     currents = []
+    Itot = []
+    I_d1 = []
+    I_d2 = []
+    I_d3 = []
+
 
     for v in Vcell:
-        circuit['VLOAD'].dc_value = v
+        circuit["VLOAD"].dc_value = v
         analysis = simulator.operating_point()
-        i_out = float(analysis.branches['vload'][0])
+        i_out = float(analysis.branches["vload"][0])  # type: ignore
         currents.append(i_out)
 
+        # Individual recombination currents
+        #i21 = float(analysis.branches["d21"][0])
+        #i22 = float(analysis.branches["d22"][0])
+        #i23 = float(analysis.branches["d23"][0])
+        #I_d1.append(i21)
+        #I_d2.append(i22)
+        #I_d3.append(i23)
+    currents = np.array(currents)
     voltages = np.array(Vcell)
+
+    print(currents[10], currents[10]*Rser, voltages[10], voltages[10]+currents[10]*Rser)
+    I_d1 = I01_Si * (np.exp((voltages+currents*Rser) / (1 * Vt)) - 1)/ (w * (l / 2))
+    I_d2 = I0Aug_Si * (np.exp((voltages+currents*Rser) / ((2/3) * Vt)) - 1)/ (w * (l / 2))
+    I_d3 = I0d_Si * (np.exp((voltages+currents*Rser) / (n_def * Vt)) - 1)/ (w * (l / 2))
+
     currents = np.array(currents) / (w * (l / 2))
-    return voltages, currents
+    return voltages, currents, I_d1, I_d2, I_d3
+
 
 def plot_pvk_iv_curve(voltages, currents, eff, Jsc, Voc, FF, ERE):
-    
-    
-    fig, ax1 = plt.subplots(figsize=(5, 4))
-    plt.rc('font', family='Arial', size=16)
+    """
+    Plot the perovskite cell I-V curve with efficiency table.
+    Inputs:
+        voltages: np.ndarray of voltages (V)
+        currents: np.ndarray of current densities (A/cm^2)
+        eff: float, efficiency (%)
+        Jsc: float, short-circuit current density (A/cm^2)
+        Voc: float, open-circuit voltage (V)
+        FF: float, fill factor
+        ERE: float, external radiative efficiency (%)
+    Outputs:
+        None (displays plot)
+    """
+
+    _, ax1 = plt.subplots(figsize=(5, 4))
+    plt.rc("font", family="Arial", size=16)
 
     # Left y-axis: linear current density
-    ax1.plot(voltages, currents*1e3, label='3-diode model, J-V')
-    ax1.set_xlabel('Voltage (V)')
-    ax1.set_ylabel('Current Density (mA/cm$^2$)')
-    ax1.legend(loc='lower left')
+    ax1.plot(voltages, currents * 1e3, label="3-diode model, J-V")
+    ax1.set_xlabel("Voltage (V)")
+    ax1.set_ylabel("Current Density (mA/cm$^2$)")
+    ax1.legend(loc="lower left")
     ax1.grid(False)
     ax1.set_xlim((0, 1.3))
     ax1.set_ylim((-0.01, 25))
 
     # Right y-axis: log(current)
     ax2 = ax1.twinx()
-    ax2.plot(voltages, (np.abs(currents-Jsc)*1e3), color='tab:red', linestyle='--')
-    ax2.set_ylabel('| $J - J_{sc}|$ (mA/cm$^2$)', color='tab:red')
-    ax2.tick_params(axis='y', labelcolor='tab:red')
-    ax2.set_yscale('log')
+    ax2.plot(voltages, (np.abs(currents - Jsc) * 1e3), color="tab:red", linestyle="--")
+    ax2.set_ylabel("| $J - J_{sc}|$ (mA/cm$^2$)", color="tab:red")
+    ax2.tick_params(axis="y", labelcolor="tab:red")
+    ax2.set_yscale("log")
     ax2.minorticks_on()
 
     cell_text = [
@@ -524,7 +736,7 @@ def plot_pvk_iv_curve(voltages, currents, eff, Jsc, Voc, FF, ERE):
         [f"{Jsc*1e3:.2f} mA/cm$^2$"],
         [f"{FF*100:.2f} %"],
         [f"{eff:.2f} %"],
-        [f"{100*ERE:.2f} %"]
+        [f"{100*ERE:.2f} %"],
     ]
     row_labels = [" $V_{oc}$  ", "  $J_{sc}$", "  FF", r"  $\eta$", " ERE"]
 
@@ -533,9 +745,9 @@ def plot_pvk_iv_curve(voltages, currents, eff, Jsc, Voc, FF, ERE):
         cellText=cell_text,
         rowLabels=row_labels,
         colLabels=None,
-        loc='upper right',
-        cellLoc='center',
-        bbox=[0.2, 0.4, 0.3, 0.35]
+        loc="upper right",
+        cellLoc="center",
+        bbox=[0.2, 0.4, 0.3, 0.35],  # type: ignore
     )
     table.auto_set_font_size(False)
     table.set_fontsize(12)
@@ -543,32 +755,46 @@ def plot_pvk_iv_curve(voltages, currents, eff, Jsc, Voc, FF, ERE):
 
     plt.show()
 
+
 def plot_si_jv(iV, iJ, voltages, currents, Voc, Jsc, FF, eff):
-    fig, ax = plt.subplots(figsize=(5, 4))
-    plt.rc('font', family='Arial', size=16)
-    ax.plot(iV, iJ, 'o', label='iVoc vs iJ')
-    ax.plot(voltages, currents*1e3, label='3-diode model, J-V')
-    ax.set_xlabel('Voltage (V)')
-    ax.set_ylabel('Current Density (mA/cm$^2$)')
-    ax.legend(loc='lower center')
+    """
+    Plot the Si cell J-V curve with efficiency table.
+    Inputs:
+        iV: np.ndarray of implied voltages (V)
+        iJ: np.ndarray of implied current densities (mA/cm^2)
+        voltages: np.ndarray of voltages (V)
+        currents: np.ndarray of current densities (A/cm^2)
+        Voc: float, open-circuit voltage (V)
+        Jsc: float, short-circuit current density (A/cm^2)
+        FF: float, fill factor
+        eff: float, efficiency (%)
+    Outputs:
+        None (displays plot)
+    """
+    _, ax = plt.subplots(figsize=(5, 4))
+    plt.rc("font", family="Arial", size=16)
+    ax.plot(iV, iJ, "o", label="iVoc vs iJ")
+    ax.plot(voltages, currents * 1e3, label="3-diode model, J-V")
+    ax.set_xlabel("Voltage (V)")
+    ax.set_ylabel("Current Density (mA/cm$^2$)")
+    ax.legend(loc="lower center")
     ax.grid(False)
     ax.set_xlim((0.35, 0.8))
     ax.set_ylim((-0.01, 46))
 
     # Right y-axis: log(current)
     ax2 = ax.twinx()
-    ax2.plot(voltages, (np.abs(currents-Jsc)*1e3), color='tab:red', linestyle='--')
-    ax2.set_ylabel('| $J - J_{sc}|$ (mA/cm$^2$)', color='tab:red')
-    ax2.tick_params(axis='y', labelcolor='tab:red')
-    ax2.set_yscale('log')
+    ax2.plot(voltages, (np.abs(currents - Jsc) * 1e3), color="tab:red", linestyle="--")
+    ax2.set_ylabel("| $J - J_{sc}|$ (mA/cm$^2$)", color="tab:red")
+    ax2.tick_params(axis="y", labelcolor="tab:red")
+    ax2.set_yscale("log")
     ax2.minorticks_on()
-
 
     cell_text = [
         [f"{Voc*1e3:.2f} mV"],
         [f"{Jsc*1e3:.2f} mA/cm$^2$"],
         [f"{100*FF:.2f} %"],
-        [f"{eff:.2f} %"]
+        [f"{eff:.2f} %"],
     ]
     row_labels = [" $V_{oc}$  ", "  $J_{sc}$", "  FF", r"  $\eta$"]
 
@@ -576,265 +802,378 @@ def plot_si_jv(iV, iJ, voltages, currents, Voc, Jsc, FF, eff):
         cellText=cell_text,
         rowLabels=row_labels,
         colLabels=None,
-        loc='upper right',
-        cellLoc='center',
-        bbox=[0.15, 0.55, 0.3, 0.35]
+        loc="upper right",
+        cellLoc="center",
+        bbox=[0.15, 0.55, 0.3, 0.35],  # type: ignore
     )
     table.auto_set_font_size(False)
     table.set_fontsize(12)
     table.scale(1, 1.2)
 
     plt.show()
-    
-    
+
+
 ## Transfer Matrix Method (TMM) for optical modeling
 
 
-def I_mat(n1,n2):
-	# transfer matrix at an interface
-	r = (n1-n2)/(n1+n2)
-	t = (2*n1)/(n1+n2)
-	ret = np.array([[1,r],[r,1]],dtype=complex)
-	ret = ret / t
-	return ret
+def I_mat(n1, n2):
+    """
+    Calculate the interface transfer matrix between two materials with refractive indices n1 and n2.
+    Inputs:
+        n1: refractive index of material 1
+        n2: refractive index of material 2
+    Outputs:
+        ret: 2x2 numpy array representing the interface transfer matrix
+    """
+    # transfer matrix at an interface
+    r = (n1 - n2) / (n1 + n2)
+    t = (2 * n1) / (n1 + n2)
+    ret = np.array([[1, r], [r, 1]], dtype=complex)
+    ret = ret / t
+    return ret
 
-def L_mat(n,d,l):
-	# propagation matrix
-	# n = complex dielectric constant
-	# d = thickness
-	# l = wavelength
-	xi = (2*np.pi*d*n)/l
-	L = np.array( [ [ np.exp(complex(0,-1.0*xi)),0] , [0,np.exp(complex(0,xi))] ] )
-	return L
+
+def L_mat(n, d, l):
+    """
+    Calculate the propagation transfer matrix for a layer with refractive index n, thickness d, and wavelength l.
+    Inputs:
+        n: complex refractive index of the layer
+        d: thickness of the layer (nm)
+        l: wavelength (nm)
+    Outputs:
+        L: 2x2 numpy array representing the propagation transfer matrix
+    """
+    xi = (2 * np.pi * d * n) / l
+    L = np.array([[np.exp(complex(0, -1.0 * xi)), 0], [0, np.exp(complex(0, xi))]])
+    return L
 
 
 def get_ntotal_from_excel(mat_name, lambdas, df, header=0, sheet_name=0):
-	"""
-	Read n and k values from a single Excel file for a given material index.
+    """
+    Read n and k values from a single Excel file for a given material index.
 
-	Parameters:
-	- excel_path: path to the Excel file
-	- material_index: 0-based index of the material (0 = first material, 1 = second, etc.)
-	- lambdas: array of wavelengths to interpolate over
-	- header: row number to use as column headers (default = 0)
-	- sheet_name: Excel sheet to read from (default = first sheet)
+    Inputs:
+    - excel_path: path to the Excel file
+    - material_index: 0-based index of the material (0 = first material, 1 = second, etc.)
+    - lambdas: array of wavelengths to interpolate over
+    - header: row number to use as column headers (default = 0)
+    - sheet_name: Excel sheet to read from (default = first sheet)
 
-	Returns:
-	- ntotal: list of complex refractive indices at the specified wavelengths
-	"""
-	# mat_name = 'SiO2'  # example material name
-    
-	col_index = next( (i for i, col in enumerate(df.columns) if mat_name in col),-1)
+    Outputs:
+    - ntotal: list of complex refractive indices at the specified wavelengths
+    """
+    # mat_name = 'SiO2'  # example material name
 
-	if col_index == -1:
-		raise ValueError(f"Material '{mat_name}' not found in the Excel file.")
-	else:
-		# Each material takes 2 columns: wavelength, n, k
-		
-		wavelengths = df.iloc[:, 0]
-		n_values = df.iloc[:, col_index ]
-		k_values = df.iloc[:, col_index +1]
+    col_index = next((i for i, col in enumerate(df.columns) if mat_name in col), -1)
 
-		# Drop any rows with missing values
-		valid = wavelengths.notnull() & n_values.notnull() & k_values.notnull()
-		wavelengths = wavelengths[valid].to_numpy(dtype=float)
-		n_values = n_values[valid].to_numpy(dtype=float)
-		k_values = k_values[valid].to_numpy(dtype=float)
+    if col_index == -1:
+        raise ValueError(f"Material '{mat_name}' not found in the Excel file.")
+    else:
+        # Each material takes 2 columns: wavelength, n, k
 
-		# Interpolation
-		int_n = interp1d(wavelengths, n_values, kind='linear', bounds_error=False, fill_value="extrapolate")
-		int_k = interp1d(wavelengths, k_values, kind='linear', bounds_error=False, fill_value="extrapolate")
+        wavelengths = df.iloc[:, 0]
+        n_values = df.iloc[:, col_index]
+        k_values = df.iloc[:, col_index + 1]
 
-		n_interp = int_n(lambdas)
-		k_interp = int_k(lambdas)
-  
+        # Drop any rows with missing values
+        valid = wavelengths.notnull() & n_values.notnull() & k_values.notnull()
+        wavelengths = wavelengths[valid].to_numpy(dtype=float)
+        n_values = n_values[valid].to_numpy(dtype=float)
+        k_values = k_values[valid].to_numpy(dtype=float)
 
-		ntotal = [complex(n, k) for n, k in zip(n_interp, k_interp)]
-	return ntotal
+        # Interpolation
+        int_n = interp1d(
+            wavelengths,
+            n_values,
+            kind="linear",
+            bounds_error=False,
+            fill_value="extrapolate",  # type: ignore
+        )
+        int_k = interp1d(
+            wavelengths,
+            k_values,
+            kind="linear",
+            bounds_error=False,
+            fill_value="extrapolate",  # type: ignore
+        )
+
+        n_interp = int_n(lambdas)
+        k_interp = int_k(lambdas)
+
+        ntotal = [complex(n, k) for n, k in zip(n_interp, k_interp)]
+    return ntotal
+
 
 def TMM_Tx_Ax(layers, t, lambdas, x_step, front_layers, n_k):
-	"""
-	Calculate the transmission through a stack of layers using the Transfer Matrix Method (TMM).
-	
-	Parameters:
-	layers: list of layer names
-	thicknesses: list of layer thicknesses in nm
-	lambdas: array of wavelengths in nm
-	x_step: grid spacing for cross section simulation in nm
-	"""
+    """
+    Calculate the transmission through a stack of layers using the Transfer Matrix Method (TMM).
 
-	# calculate incoherent power transmission through substrate
+    Inputs:
+        layers: list of layer names
+        t: list of layer thicknesses in nm
+        lambdas: array of wavelengths in nm
+        x_step: grid spacing for cross section simulation in nm
+        front_layers: number of layers at the front considered to be coherent
+        n_k: 2D array of complex refractive indices for each layer at each wavelength
+    Outputs:
+        TotalTx: array of total transmission values at each wavelength
+        Absorption: 2D array of absorption values for each layer at each wavelength
+        Reflection: array of reflection values at each wavelength
+        E: 2D array of electric field values at each position and wavelength
+        x_pos: array of positions in the stack (nm)
+        n_k: 2D array of complex refractive indices for each layer at each wavelength
+    """
 
-	T_glass = abs((4.0*1.0*n_k[0,:])/((1+n_k[0,:])**2))
-	R_glass = abs((1-n_k[0,:])/(1+n_k[0,:]))**2
+    # calculate incoherent power transmission through substrate
 
-	# calculate transfer marices, and field at each wavelength and position
-	t[0] 		= 0
-	t_cumsum	= np.cumsum(t)
-	x_pos		= np.arange((x_step/2.0),sum(t),x_step)
-	# get x_mat
-	comp1	= np.kron(np.ones( (len(t),1) ),x_pos)
-	comp2	= np.transpose(np.kron(np.ones( (len(x_pos),1) ),t_cumsum))
-	x_mat 	= sum(comp1>comp2,0) 	# might need to get changed to better match python indices
+    T_glass = abs((4.0 * 1.0 * n_k[0, :]) / ((1 + n_k[0, :]) ** 2)) # transmission at air-glass interface
+    R_glass = abs((1 - n_k[0, :]) / (1 + n_k[0, :])) ** 2 # reflection at air-glass interface
 
-	R		= lambdas*0.0
-	T		= lambdas*0.0
-	E		= np.zeros( (len(x_pos),len(lambdas)),dtype=complex )
+    # calculate transfer matrices, and field at each wavelength and position
+    t[0] = 0
+    t_cumsum = np.cumsum(t)
+    x_pos = np.arange((x_step / 2.0), sum(t), x_step)
+    # get x_mat
+    comp1 = np.kron(np.ones((len(t), 1)), x_pos)
+    comp2 = np.transpose(np.kron(np.ones((len(x_pos), 1)), t_cumsum))
+    x_mat = sum(
+        comp1 > comp2, 0
+    )  # might need to get changed to better match python indices
 
-	# start looping
-	for ind,l in enumerate(lambdas):
-		# calculate the transfer matrices for incoherent reflection/transmission at the first interface
-		S = I_mat(n_k[0,ind],n_k[1,ind])
-		for matind in np.arange(1,len(t)-1):
-			mL = L_mat( n_k[matind,ind] , t[matind] , lambdas[ind] )
-			mI = I_mat( n_k[matind,ind] , n_k[matind+1,ind])
-			S  = np.asarray(np.asmatrix(S)*np.asmatrix(mL)*np.asmatrix(mI))
-		R[ind] = abs(S[1,0]/S[0,0])**2
-		T[ind] = abs((2/(1+n_k[0,ind])))/np.sqrt(1-R_glass[ind]*R[ind])
-		
-		# good up to here
-		# calculate all other transfer matrices
-		for material in np.arange(1,len(t)):
-			xi = 2*np.pi*n_k[material,ind]/lambdas[ind]
-			dj = t[material]
+    R = lambdas * 0.0
+    T_stack = lambdas * 0.0  # Transmission through entire stack
+    E = np.zeros((len(x_pos), len(lambdas)), dtype=complex)
 
-			x_indices	= np.nonzero(x_mat == material)
-			x			= x_pos[x_indices]-t_cumsum[material-1]               
-			# Calculate S_Prime
-			S_prime		= I_mat(n_k[0,ind],n_k[1,ind])
-			for matind in np.arange(2,material+1):
-				mL = L_mat( n_k[matind-1,ind],t[matind-1],lambdas[ind] )
-				mI = I_mat( n_k[matind-1,ind],n_k[matind,ind] )
-				S_prime  = np.asarray( np.asmatrix(S_prime)*np.asmatrix(mL)*np.asmatrix(mI) )
-			# Calculate S_dprime (double prime)
-			S_dprime	= np.eye(2)
-			for matind in np.arange(material,len(t)-1):
-				mI	= I_mat(n_k[matind,ind],n_k[matind+1,ind])
-				mL	= L_mat(n_k[matind+1,ind],t[matind+1],lambdas[ind])
-				S_dprime = np.asarray( np.asmatrix(S_dprime) * np.asmatrix(mI) * np.asmatrix(mL) )
-			# Normalized Electric Field Profile
-			num = T[ind] * (S_dprime[0,0] * np.exp( complex(0,-1.0)*xi*(dj-x) ) + S_dprime[1,0]*np.exp(complex(0,1)*xi*(dj-x)))
-			den = S_prime[0,0]*S_dprime[0,0]*np.exp(complex(0,-1.0)*xi*dj) + S_prime[0,1]*S_dprime[1,0]*np.exp(complex(0,1)*xi*dj)
-			E[x_indices,ind] = num / den
+    # start looping
+    for ind, l in enumerate(lambdas):
+        # calculate the transfer matrices for incoherent reflection/transmission at the first interface
+        S = I_mat(n_k[0, ind], n_k[1, ind])
+        for matind in np.arange(1, len(t) - 1):
+            mL = L_mat(n_k[matind, ind], t[matind], lambdas[ind])
+            mI = I_mat(n_k[matind, ind], n_k[matind + 1, ind])
+            S = np.asarray(np.asmatrix(S) * np.asmatrix(mL) * np.asmatrix(mI))
+        R[ind] = abs(S[1, 0] / S[0, 0]) ** 2
+        T_stack[ind] = abs((2 / (1 + n_k[0, ind]))) / np.sqrt(1 - R_glass[ind] * R[ind])
 
-	# overall Reflection from device with incoherent reflections at first interface
-	Reflection = R_glass+T_glass**2*R/(1-R_glass*R)
+        # good up to here
+        # calculate all other transfer matrices
+        for material in np.arange(1, len(t)):
+            xi = 2 * np.pi * n_k[material, ind] / lambdas[ind]
+            dj = t[material]
 
-	# Absorption coefficient in 1/cm
-	a = np.zeros( (len(t),len(lambdas)) )
-	for matind in np.arange(1,len(t)):
-		a[matind,:] = ( 4 * np.pi * np.imag(n_k[matind,:]) ) / ( lambdas * 1.0e-7 )
+            x_indices = np.nonzero(x_mat == material)  # type: ignore
+            x = x_pos[x_indices] - t_cumsum[material - 1]
+            # Calculate S_Prime
+            S_prime = I_mat(n_k[0, ind], n_k[1, ind])
+            for matind in np.arange(2, material + 1):
+                mL = L_mat(n_k[matind - 1, ind], t[matind - 1], lambdas[ind])
+                mI = I_mat(n_k[matind - 1, ind], n_k[matind, ind])
+                S_prime = np.asarray(
+                    np.asmatrix(S_prime) * np.asmatrix(mL) * np.asmatrix(mI)
+                )
+            # Calculate S_dprime (double prime)
+            S_dprime = np.eye(2)
+            for matind in np.arange(material, len(t) - 1):
+                mI = I_mat(n_k[matind, ind], n_k[matind + 1, ind])
+                mL = L_mat(n_k[matind + 1, ind], t[matind + 1], lambdas[ind])
+                S_dprime = np.asarray(
+                    np.asmatrix(S_dprime) * np.asmatrix(mI) * np.asmatrix(mL)
+                )
+            # Normalized Electric Field Profile
+            num = T_stack[ind] * (
+                S_dprime[0, 0] * np.exp(complex(0, -1.0) * xi * (dj - x))
+                + S_dprime[1, 0] * np.exp(complex(0, 1) * xi * (dj - x))
+            )
+            den = S_prime[0, 0] * S_dprime[0, 0] * np.exp(
+                complex(0, -1.0) * xi * dj
+            ) + S_prime[0, 1] * S_dprime[1, 0] * np.exp(complex(0, 1) * xi * dj)
+            E[x_indices, ind] = num / den
 
-	Absorption = np.zeros( (len(t),len(lambdas)) )
-	for matind in np.arange(1,len(t)):
-		Pos 		= np.nonzero(x_mat == matind)
-		AbsRate 	= np.tile( (a[matind,:] * np.real(n_k[matind,:])) , (len(Pos),1)) * (abs(E[Pos,:])**2)
-		Absorption[matind,:] = np.sum(AbsRate,1)*x_step*1.0e-7
-	
-	TotalTx=( 1 - Reflection - np.sum(Absorption[front_layers,:], axis=0))
- 	
-	return TotalTx, Absorption, Reflection, E, x_pos, n_k
+    # overall Reflection from device with incoherent reflections at first interface
+    Reflection = R_glass + T_glass**2 * R / (1 - R_glass * R)
+
+    # Absorption coefficient in 1/cm
+    a = np.zeros((len(t), len(lambdas)))
+    for matind in np.arange(1, len(t)):
+        a[matind, :] = (4 * np.pi * np.imag(n_k[matind, :])) / (lambdas * 1.0e-7)
+
+    Absorption = np.zeros((len(t), len(lambdas)))
+    for matind in np.arange(1, len(t)):
+        Pos = np.nonzero(x_mat == matind)  # type: ignore
+        AbsRate = np.tile((a[matind, :] * np.real(n_k[matind, :])), (len(Pos), 1)) * (
+            abs(E[Pos, :]) ** 2
+        )
+        Absorption[matind, :] = np.sum(AbsRate, 1) * x_step * 1.0e-7
+
+    TotalTx = 1 - Reflection - np.sum(Absorption[front_layers, :], axis=0)
+
+    return TotalTx, Absorption, Reflection, E, x_pos, n_k
 
 
-def optic_electronic_efficiency(Si_Waf_thick, pvk_layer_id, R_tco, BB300K, layers, thicknesses, 
-                                lambda_vec, AM15g, x_step, l_values, front_layers,
-                                top_cell_density, bottom_cell_density, w, d, Vcell, RserInt,df_pvk0,EgapP ):
+def optic_electronic_efficiency(
+    Si_Waf_thick,
+    pvk_layer_id,
+    R_tco,
+    BB300K,
+    layers,
+    thicknesses,
+    lambda_vec,
+    AM15g,
+    x_step,
+    l_values,
+    front_layers,
+    top_cell_density,
+    bottom_cell_density,
+    w,
+    d,
+    Vcell,
+    RserInt,
+    df_pvk0,
+    EgapP,
+):
     """
     Calculate the optical and electronic efficiency of a solar cell stack using TMM.
-    
-    Parameters:
-    Si_Waf_thick: Thickness of the silicon wafer in cm.
-    pvk_layer_id: Index of the perovskite layer in the layers list.
-    R_tco: Series resistance of the TCO in ohms.cm^2.
-    BB300K: Black body radiation at 300K.
-    layers: List of layer names.
-    thicknesses: List of layer thicknesses in nm.
-    lambda_vec: Array of wavelengths in nm.
-    AM15g: AM1.5 global spectrum.
-    x_step: Grid spacing for cross section simulation in nm.
-    l_values: Array of finger pitches in cm.
-    front_layers: List of indices for front layers in the stack.
-    top_cell_density: Density parameters for the top cell.
-    bottom_cell_density: Density parameters for the bottom cell.
-    w: Width of the cell in cm.
-    d: Contact width in um.
-    Vcell: Array of voltages to simulate.
-    RserInt: Internal series resistance in ohms.cm^2.
+
+    Inputs:
+        Si_Waf_thick: Thickness of the silicon wafer in cm.
+        pvk_layer_id: Index of the perovskite layer in the layers list.
+        R_tco: Series resistance of the TCO in ohms.cm^2.
+        BB300K: Black body radiation at 300K.
+        layers: List of layer names.
+        thicknesses: List of layer thicknesses in nm.
+        lambda_vec: Array of wavelengths in nm.
+        AM15g: AM1.5 global spectrum.
+        x_step: Grid spacing for cross section simulation in nm.
+        l_values: Array of finger pitches in cm.
+        front_layers: List of indices for front layers in the stack.
+        top_cell_density: Density parameters for the top cell.
+        bottom_cell_density: Density parameters for the bottom cell.
+        w: Width of the cell in cm.
+        d: Contact width in um.
+        Vcell: Array of voltages to simulate.
+        RserInt: Internal series resistance in ohms.cm^2.
+        df_pvk0: DataFrame containing initial perovskite optical properties.
+        EgapP: Bandgap energy of the perovskite layer in eV.
+    Outputs:
+        eff: Efficiency of the tandem cell (%).
+        Jsc: Short-circuit current density of the tandem cell (A/cm^2).
+        Voc: Open-circuit voltage of the tandem cell (V).
+        FF: Fill factor of the tandem cell.
+        TotalTx: Total transmission through the stack.
+        Absorption: 2D array of absorption values for each layer at each wavelength.
+        Reflection: Array of reflection values at each wavelength.
+        E: 2D array of electric field values at each position and wavelength.
+        x_pos: Array of positions in the stack (nm).
+        n_k: 2D array of complex refractive indices for each layer at each wavelength.
     """
 
     # obtain the complex refractive index for all layers
-    excel_path = './data/Optical_Properties.xlsx'
+    excel_path = "./data/Optical_Properties.xlsx"
     df_nk_excel = pd.read_excel(excel_path, header=0, sheet_name=0)
-    n_k = np.zeros((len(layers),len(lambda_vec)),dtype=complex)
+    n_k = np.zeros((len(layers), len(lambda_vec)), dtype=complex)
 
     # load index of refraction for each material in the stack
-    for i,l in enumerate(layers):
-        ni = np.array(get_ntotal_from_excel(l,lambda_vec,df_nk_excel))
-        n_k[i,:] = ni
+    for i, l in enumerate(layers):
+        ni = np.array(get_ntotal_from_excel(l, lambda_vec, df_nk_excel))
+        n_k[i, :] = ni
 
-    #correct the n_k values to account for the exact bangap in the pvk_layer
+    # correct the n_k values to account for the exact bangap in the pvk_layer
     df_pvk_tmm = pd.DataFrame(columns=df_pvk0.columns)
-    df_pvk_tmm['lambda_k']=lambda_vec
-    df_pvk_tmm['alpha']=(4 * np.pi * n_k[pvk_layer_id,:].imag) / (lambda_vec*1e-7)
-    lambda_shift=get_lambda_shift(EgapP,lambda_vec,df_pvk_tmm)
-    int_n = interp1d(lambda_vec+lambda_shift, n_k[pvk_layer_id,:].real, kind='linear', bounds_error=False, fill_value="extrapolate")
-    int_k = interp1d(lambda_vec+lambda_shift, n_k[pvk_layer_id,:].imag, kind='linear', bounds_error=False, fill_value="extrapolate")
-    new_n_k=np.array([complex(n, k) for n, k in zip(int_n(lambda_vec), int_k(lambda_vec))])
-    n_k[pvk_layer_id,:] = new_n_k  
+    df_pvk_tmm["lambda_k"] = lambda_vec
+    df_pvk_tmm["alpha"] = (4 * np.pi * n_k[pvk_layer_id, :].imag) / (lambda_vec * 1e-7)  # type: ignore
+    lambda_shift = get_lambda_shift(EgapP, lambda_vec, df_pvk_tmm)
+    int_n = interp1d(
+        lambda_vec + lambda_shift,
+        n_k[pvk_layer_id, :].real,  # type: ignore
+        kind="linear",
+        bounds_error=False,
+        fill_value="extrapolate",  # type: ignore
+    )
+    int_k = interp1d(
+        lambda_vec + lambda_shift,
+        n_k[pvk_layer_id, :].imag,  # type: ignore
+        kind="linear",
+        bounds_error=False,
+        fill_value="extrapolate",  # type: ignore
+    )
+    new_n_k = np.array(
+        [complex(n, k) for n, k in zip(int_n(lambda_vec), int_k(lambda_vec))]
+    )
+    n_k[pvk_layer_id, :] = new_n_k
 
-    TotalTx, Absorption, Reflection, E, x_pos, n_k= TMM_Tx_Ax(layers, thicknesses, lambda_vec, x_step, front_layers,n_k)
+    TotalTx, Absorption, Reflection, E, x_pos, n_k = TMM_Tx_Ax(
+        layers, thicknesses, lambda_vec, x_step, front_layers, n_k
+    )
 
-    Jsc_pvk= q* np.trapezoid(AM15g*Absorption[pvk_layer_id,:], lambda_vec) # A/cm2
-    EQE_pvk=Absorption[pvk_layer_id, :]
+    Jsc_pvk = q * np.trapezoid(AM15g * Absorption[pvk_layer_id, :], lambda_vec)  # A/cm2
+    EQE_pvk = Absorption[pvk_layer_id, :]
     FilteredAM15g = AM15g * TotalTx  # Filtered AM15g spectrum after the top cell
-    Jsc_Si, AxSi = Jsc_Si_fun(Si_Waf_thick, lambda_vec, FilteredAM15g)
-    EQE_Si=FilteredAM15g*AxSi/AM15g
-    
-    J0_pvk=q * np.trapezoid(BB300K*EQE_pvk , lambda_vec)
-    J0_Si=q * np.trapezoid(BB300K*EQE_Si , lambda_vec)
-    
+    Jsc_Si, AxSi = Jsc_Si_func(Si_Waf_thick, lambda_vec, FilteredAM15g)
+    EQE_Si = FilteredAM15g * AxSi / AM15g
+
+    J0_pvk = q * np.trapezoid(BB300K * EQE_pvk, lambda_vec)
+    J0_Si = q * np.trapezoid(BB300K * EQE_Si, lambda_vec)
+
     # Unpack all values from top_cell and bottom_cell
-    _, Rsh_pvk , J01d_pvk,  J0def_pvk, Rdef_pvk, J02_pvk = top_cell_density
+    _, Rsh_pvk, J01d_pvk, J0def_pvk, Rdef_pvk, J02_pvk = top_cell_density
     _, Rsh_Si, _, J0Aug_Si, J0n_Si, n_def = bottom_cell_density
 
     AAF = 1 - d / l_values  # Active Area Fraction, assuming d = 20 um contact width
-    l, _, _, _, _ = find_optimal_pitch(J0_Si, J0n_Si, J0Aug_Si, Rsh_Si, Jsc_Si, l_values, R_tco, AAF)
-    AAF = 1 - d / l  
+    l, _, _, _, _ = find_optimal_pitch(
+        J0_Si, J0n_Si, J0Aug_Si, Rsh_Si, Jsc_Si, l_values, R_tco, AAF
+    )
+    AAF = 1 - d / l
 
     # Re-calculate the currents, based on the optimal pitch. Units of Amperes
     # perovskite top cell
-    Isc_pvk = -AAF * w * (l / 2) *Jsc_pvk
-    I0_pvk =  w * (l / 2) * J0_pvk
-    I01d_pvk= ( w * (l / 2)) * J01d_pvk
+    Isc_pvk = -AAF * w * (l / 2) * Jsc_pvk
+    I0_pvk = w * (l / 2) * J0_pvk
+    I01d_pvk = (w * (l / 2)) * J01d_pvk
 
     # silicon bottom cell
-    Isc_Si = -AAF * w * (l / 2) *Jsc_Si
-    I01_Si =  w * (l / 2) * J0_Si
+    Isc_Si = -AAF * w * (l / 2) * Jsc_Si
+    I01_Si = w * (l / 2) * J0_Si
 
-    Rser = R_tco * (l**2/ (12)) + RserInt # series resistance in ohms.cm^2 [TCO + external]
+    Rser = (
+        R_tco * (l**2 / (12)) + RserInt
+    )  # series resistance in ohms.cm^2 [TCO + external]
 
-    top_cell= [Isc_pvk, Rsh_pvk / ( w * (l / 2)), I0_pvk + I01d_pvk,  J0def_pvk * w * (l / 2), Rdef_pvk/ ( w * (l / 2)), J02_pvk* w * (l / 2)]
-    bottom_cell = [Isc_Si, Rsh_Si/(w*(l/2)), I01_Si, J0Aug_Si* w * (l / 2) , J0n_Si* w * (l / 2), n_def]
+    top_cell = [
+        Isc_pvk,
+        Rsh_pvk / (w * (l / 2)),
+        I0_pvk + I01d_pvk,
+        J0def_pvk * w * (l / 2),
+        Rdef_pvk / (w * (l / 2)),
+        J02_pvk * w * (l / 2),
+    ]
+    bottom_cell = [
+        Isc_Si,
+        Rsh_Si / (w * (l / 2)),
+        I01_Si,
+        J0Aug_Si * w * (l / 2),
+        J0n_Si * w * (l / 2),
+        n_def,
+    ]
 
     voltages, currents = simulate_circuit(top_cell, bottom_cell, Rser, w, l, Vcell)
 
-    eff, Jsc, Voc, FF =calculate_efficiency(voltages, currents, False)
+    eff, Jsc, Voc, FF = calculate_efficiency(voltages, currents, False)
 
     return eff, Jsc, Voc, FF, TotalTx, Absorption, Reflection, E, x_pos, n_k
-
 
 
 def Si_res(delta_n_q, ndop_q):
     """
     Interpolates resistivity values from an Excel file based on Delta_n and Ndop.
-    Args:
+    Inputs:
         delta_n_q: Array of Delta_n values (cm^-3).
         ndop_q: Single value of Ndop values (cm^-3). [does not support array]
-
+    Outputs:
+        rho_vals: Array of resistivity values (ohm.cm) corresponding to delta_n_q and ndop_q.
     """
-    
+
     # Load Excel, skipping the first row (Ndop header), and keeping it separately
-    df = pd.read_excel("./data/resistivity_Si.xlsx")
+    df = pd.read_excel(r"C:\Users\linc5977\Desktop\hub\TandEx\data\resistivity_Si.xlsx")
 
     # Extract Delta_n (column 0)
     delta_n_vals = df.iloc[:, 0].values
@@ -849,7 +1188,7 @@ def Si_res(delta_n_q, ndop_q):
         (delta_n_vals, ndop_vals),
         rho_matrix,
         bounds_error=False,  # optional: allows extrapolation
-        fill_value=None      # extrapolates if bounds_error=False
+        fill_value=None,  # extrapolates if bounds_error=False # type: ignore
     )
 
     # delta_n_q = np.linspace(1e10, 1.0e17, 100)
@@ -862,15 +1201,17 @@ def Si_res(delta_n_q, ndop_q):
     rho_vals = interp_func(query_points)
     return rho_vals
 
-    
-
-
 
 def high_slope(x, y, window_size=3):
     """
-    Finds the region of x-y data with the highest slope using a sliding window.
-    Returns the best-fit regression parameters (slope, intercept, etc.)
-    for the window with the maximum slope magnitude.
+    Find the region with the highest slope in the data using a sliding window approach.
+    Inputs:
+        x: np.ndarray of x values.
+        y: np.ndarray of y values.
+        window_size: int, size of the sliding window (default=3).
+    Outputs:
+        best_indices: tuple of (start_index, end_index) of the region with the highest slope.
+        best_reg: tuple of (slope, intercept, r_value, p_value, std_err) of the best linear regression.
     """
     lenx = len(x)
     if lenx < 2 * window_size + 1:
@@ -882,8 +1223,8 @@ def high_slope(x, y, window_size=3):
 
     # Slide a window across the data
     for i in range(window_size, lenx - window_size):
-        x_win = x[i - window_size:i + window_size + 1]
-        y_win = y[i - window_size:i + window_size + 1]
+        x_win = x[i - window_size : i + window_size + 1]
+        y_win = y[i - window_size : i + window_size + 1]
 
         # Only fit if x_win has variation
         if np.allclose(x_win, x_win[0]):
@@ -891,7 +1232,7 @@ def high_slope(x, y, window_size=3):
 
         slope, intercept, r_value, p_value, std_err = linregress(x_win, y_win)
 
-        if abs(slope) > abs(max_slope):
+        if abs(slope) > abs(max_slope):  # type: ignore
             max_slope = slope
             best_reg = (slope, intercept, r_value, p_value, std_err)
             best_indices = (i - window_size, i + window_size)
@@ -902,35 +1243,58 @@ def high_slope(x, y, window_size=3):
     return best_indices, best_reg
 
 
-def tauc_analysis(df_pvk, lambda_shift, lambda_vec, Erange,plot=True):
-        
-    #first make a copy of the df so that changes only happen inside function
-    df=df_pvk.copy()
-    df['lambda_k']+=lambda_shift
+def tauc_analysis(df_pvk, lambda_shift, lambda_vec, Erange, plot=True):
+    """
+    Perform Tauc analysis to determine the bandgap of a direct bandgap semiconductor.
+    Inputs:
+        df_pvk: DataFrame with columns 'lambda_k' (wavelength in nm) and 'alpha' (absorption coefficient in cm^-1).
+        lambda_shift: float, shift to apply to the wavelength data (in nm).
+        lambda_vec: np.ndarray of wavelengths (in nm) to evaluate.
+        Erange: list of two floats, energy range [E_min, E_max] in eV for fitting.
+        plot: bool, whether to plot the Tauc plot and linear fit (default=True).
+    Outputs:
+        Eg: float, estimated bandgap energy in eV.
+        df: DataFrame with updated 'lambda_k' after applying lambda_shift.
+    """
 
-    interp1d_pvk_alpha = interp1d(df['lambda_k'], df['alpha'], kind='linear', fill_value='extrapolate')
+    # first make a copy of the df so that changes only happen inside function
+    df = df_pvk.copy()
+    df["lambda_k"] += lambda_shift
+
+    interp1d_pvk_alpha = interp1d(  # find alpha at (shifted) lambda_vec
+        df["lambda_k"], df["alpha"], kind="linear", fill_value="extrapolate"  # type: ignore
+    )
 
     photon_energy = (hc) / lambda_vec  # in eV
 
     # === Tauc relation for direct bandgap ===
-    tauc_y = (interp1d_pvk_alpha(lambda_vec) * photon_energy)**2
+    tauc_y = (interp1d_pvk_alpha(lambda_vec) * photon_energy) ** 2
 
     # === Restrict fit region (linear portion) ===
-    fit_mask = (photon_energy > Erange[0]) & (photon_energy < Erange[1])
-    x_fit = photon_energy[fit_mask]; y_fit = tauc_y[fit_mask]
+    fit_mask = (photon_energy > Erange[0]) & (
+        photon_energy < Erange[1]
+    )  # this assumes Erange will restrict to linear portion -- user must provide reasonable Erange values
+    x_fit = photon_energy[fit_mask]
+    y_fit = tauc_y[fit_mask]
 
     # Linear regression
-    indices, reg = high_slope(x_fit, y_fit, window_size=2)
-    slope, intercept, r_value, p_value, std_err = linregress(x_fit[indices[0]:indices[1]], y_fit[indices[0]:indices[1]])
+    indices, _ = high_slope(
+        x_fit, y_fit, window_size=2
+    )  # find region with highest slope
+    slope, intercept, _, _, _ = linregress(
+        x_fit[indices[0] : indices[1]], y_fit[indices[0] : indices[1]]  # type: ignore
+    )
 
     # Bandgap is where y=0 => Eg = -intercept/slope
-    Eg = -intercept / slope
+    Eg = -intercept / slope  # type: ignore
 
     if plot:
         # === Plot ===
-        plt.figure(figsize=(4,3))
-        plt.plot(x_fit, y_fit, 'o', label="Tauc data", color="blue")
-        plt.plot(x_fit, slope*x_fit + intercept, "--", color="red", label="Linear fit")
+        plt.figure(figsize=(4, 3))
+        plt.plot(x_fit, y_fit, "o", label="Tauc data", color="blue")
+        plt.plot(
+            x_fit, slope * x_fit + intercept, "--", color="red", label="Linear fit"
+        )
         # plt.xlim((1.5,1.9)); plt.ylim((0,30))
 
         plt.axvline(Eg, color="green", linestyle=":", label=f"Eg ≈ {Eg:.3f} eV")
@@ -943,42 +1307,60 @@ def tauc_analysis(df_pvk, lambda_shift, lambda_vec, Erange,plot=True):
     # df_pvk.to_csv(r'./data/pvk_nk_data.csv', index=False)
     return Eg, df
 
-def get_lambda_shift(EgapP,lambda_vec,df_pvk0):
+
+def get_lambda_shift(EgapP, lambda_vec, df_pvk0):
+    """
+    Determine the wavelength shift needed to align the perovskite bandgap with the desired value using Tauc analysis.
+    Inputs:
+        EgapP: float, desired bandgap energy in eV.
+        lambda_vec: np.ndarray of wavelengths (in nm).
+        df_pvk0: DataFrame with columns 'lambda_k' (wavelength in nm) and 'alpha' (absorption coefficient in cm^-1).
+    Outputs:
+        lambda_shift: float, wavelength shift in nm.
+    """
 
     # tauc analsisys of the absorption coefficient in the perovsite
 
     # file_path = "./data/CsFaPbIB_1,72_Tejada2018.csv"
     # df_pvk = pd.read_csv(file_path)
-    
-    Erange=[EgapP-0.2,EgapP+0.2] # specify the range of energy to do the tauc fitting 
 
-    results = []; i = 1; lambda_shift=0
+    Erange = [
+        EgapP - 0.2,
+        EgapP + 0.2,
+    ]  # specify the range of energy to do the tauc fitting
+
+    results = []
+    i = 1
+    lambda_shift = 0
 
     while i < 200:
-        E_gap, df_new_nk = tauc_analysis(df_pvk0, lambda_shift, lambda_vec, Erange, plot=False)
-        results.append({'lambda_shift': lambda_shift, 'E_gap': E_gap})
-        if np.abs(E_gap-EgapP) < 0.01:
+        E_gap, df_new_nk = tauc_analysis(
+            df_pvk0, lambda_shift, lambda_vec, Erange, plot=False
+        )
+        results.append({"lambda_shift": lambda_shift, "E_gap": E_gap})
+        if np.abs(E_gap - EgapP) < 0.01:
             # print("Met condition, breaking")
             break
-        if E_gap>EgapP:
-            lambda_shift+=0.1
-        elif E_gap<EgapP:
-            lambda_shift-=0.1
+        if E_gap > EgapP:
+            lambda_shift += 0.1
+        elif E_gap < EgapP:
+            lambda_shift -= 0.1
         i += 1
     # print(lambda_shift)
-    E_gap, df_new_nk = tauc_analysis(df_pvk0, lambda_shift, lambda_vec, Erange, plot=False)
+    E_gap, df_new_nk = tauc_analysis(
+        df_pvk0, lambda_shift, lambda_vec, Erange, plot=False
+    )
 
     # write new file with the modified nk data
-    df_new_nk.to_csv(r'./data/pvk_nk_data.csv', index=False)
-
+    df_new_nk.to_csv(r"./data/pvk_nk_data.csv", index=False)
 
     # mat_name="CsFaPbIB"
-    
+
     # excel_path = './data/Optical_Properties.xlsx'
 
     # df = pd.read_excel(excel_path, header=0, sheet_name=0)
     # col_index = next( (i for i, col in enumerate(df.columns) if mat_name in col),-1)
-        
+
     # wavelengths = df.iloc[:, 0]
     # wavelengths2 = wavelengths+lambda_shift
     # n_values = df.iloc[:, col_index ]
@@ -993,7 +1375,7 @@ def get_lambda_shift(EgapP,lambda_vec,df_pvk0):
 
     # df.iloc[:, col_index ]=n_interp
     # df.iloc[:, col_index +1]=k_interp
-    
+
     # df.to_excel('./data/Optical_Properties2.xlsx', index=False)
-    
+
     return lambda_shift
