@@ -270,7 +270,7 @@ def Jsc_pvk_func(lambda_vec, AM15g, pvk_thick, Eg, df_pvk0):
 
     # Calculate the short-circuit current density for the perovskite cell
 
-    file_path = r"C:\Users\linc5977\Desktop\hub\TandEx\data\pvk_nk_data.csv"
+    file_path = r"C:\Users\linc5977\Desktop\phd_hub\TandEx\data\pvk_nk_data.csv"
     df_pvk = pd.read_csv(file_path)
 
     # pvk_thick= 600e-7  # cm
@@ -302,7 +302,7 @@ def Jsc_Si_func(Waf_thick, lambda_vec, AM15g):
     """
 
     # Load the Si n_k properties
-    file_path = r"C:\Users\linc5977\Desktop\hub\TandEx\data\Si_opt.csv"
+    file_path = r"C:\Users\linc5977\Desktop\phd_hub\TandEx\data\Si_opt.csv"
     Si_nk = pd.read_csv(file_path)
     Si_nk = Si_nk.rename(
         columns={
@@ -1173,7 +1173,7 @@ def Si_res(delta_n_q, ndop_q):
     """
 
     # Load Excel, skipping the first row (Ndop header), and keeping it separately
-    df = pd.read_excel(r"C:\Users\linc5977\Desktop\hub\TandEx\data\resistivity_Si.xlsx")
+    df = pd.read_excel(r"C:\Users\linc5977\Desktop\phd_hub\TandEx\data\resistivity_Si.xlsx")
 
     # Extract Delta_n (column 0)
     delta_n_vals = df.iloc[:, 0].values
