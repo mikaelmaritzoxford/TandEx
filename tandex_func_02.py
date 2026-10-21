@@ -15,8 +15,16 @@ import gc
 
 # this code requires the ngspice library to be installed
 import ctypes
-NgSpiceShared.library_path = r'C:\Spice64_dll\dll-vs\ngspice.dll'
-ctypes.cdll.LoadLibrary("C:/Spice64_dll/dll-vs/ngspice.dll")
+
+#NgSpiceShared.library_path = r'C:\Spice64_dll\dll-vs\ngspice.dll'
+#NgSpiceShared.library_path = r'./data/ngspice.dll'
+#ctypes.cdll.LoadLibrary("C:/Spice64_dll/dll-vs/ngspice.dll")
+
+ngspice_path = "/opt/homebrew/opt/libngspice/lib/libngspice.dylib"
+
+NgSpiceShared.library_path = ngspice_path
+ctypes.cdll.LoadLibrary(ngspice_path)
+
 
 # Constants
 k = 1.380649e-23  # Boltzmann constant in J/K
@@ -503,17 +511,17 @@ def plot_pvk_iv_curve(voltages, currents, eff, Jsc, Voc, FF, ERE):
     plt.rc('font', family='Arial', size=16)
 
     # Left y-axis: linear current density
-    ax1.plot(voltages, currents*1e3, label='3-diode model, J-V')
+    ax1.plot(voltages, currents*1e3, label='3-diode model, J-V', markersize=0,linestyle='-')
     ax1.set_xlabel('Voltage (V)')
     ax1.set_ylabel('Current Density (mA/cm$^2$)')
     ax1.legend(loc='lower left')
     ax1.grid(False)
-    ax1.set_xlim((0, 1.3))
+    ax1.set_xlim((0, min(max(voltages),2)))
     ax1.set_ylim((-0.01, 25))
 
     # Right y-axis: log(current)
     ax2 = ax1.twinx()
-    ax2.plot(voltages, (np.abs(currents-Jsc)*1e3), color='tab:red', linestyle='--')
+    ax2.plot(voltages, (np.abs(currents-Jsc)*1e3), color='tab:red', linestyle='--', markersize=0)
     ax2.set_ylabel('| $J - J_{sc}|$ (mA/cm$^2$)', color='tab:red')
     ax2.tick_params(axis='y', labelcolor='tab:red')
     ax2.set_yscale('log')
