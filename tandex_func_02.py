@@ -216,7 +216,13 @@ def Jsc_Si_fun(Waf_thick, lambda_vec, AM15g):
     
     # Load the Si n_k properties
     file_path = "./data/Si_opt.csv"
-    Si_nk = pd.read_csv(file_path)
+    try:
+        Si_nk = pd.read_csv(file_path)
+    except:
+        print('"./data/Si_opt.csv" is not the right file path, trying "./Tandexdata/Si_opt.csv"')
+        file_path = "./Tandexdata/Si_opt.csv"
+        Si_nk = pd.read_csv(file_path)
+    
     Si_nk = Si_nk.rename(columns={
         'λ,n (nm)': 'lambda_n',
         'n': 'n',
